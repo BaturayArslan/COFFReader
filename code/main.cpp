@@ -3,6 +3,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+//************************************************************
+// DATA STRUCTS
+// ***********************************************************
+
 // using uint16_t and uint32_t because short, int and long sizes could be different depending on a platform and a compiler. Since, on fixed size headers its critical to be exact with sizes I'm using "fixed" size data types here for all different platforms.
 // 
 struct FILE_HEADER
@@ -57,44 +61,13 @@ struct SYMBOL
 };
 #pragma pack(pop)
 
+//************************************************************
+// PRINT FUNCTIONS
+//************************************************************
+
 void ShowError(const char *messageFormat, const char *data )
 {
     fprintf(stderr, messageFormat, data);
-}
-
-void VerifyArg(int argc, char **argv)
-{
-    if(argc < 2)
-    {
-        ShowError("Usage: %s <filePath> \n", argv[0]);
-        exit(1);                                    // User didn't supply the object file path
-    }
-}
-
-const char* GetObjFilePath(char **argv)
-{
-    return argv[1];
-}
-
-FILE* OpenObjectFile(const char *path)
-{
-    FILE* file = fopen(path, "rb");
-    if(!file)
-    {
-        ShowError("File couldn't found: %s", path);
-        exit(1);
-    }
-    return file;
-}
-
-void ReadFileHeader(FILE* file, FILE_HEADER *fileHeader)
-{
-    size_t count = fread(fileHeader, sizeof(FILE_HEADER), 1, file);
-    if(count != 1)
-     {
-         ShowError("Something went wrong during reading file header.", "");
-         exit(1);
-     }
 }
 
  void PrintSeparator()
@@ -138,19 +111,6 @@ void ReadFileHeader(FILE* file, FILE_HEADER *fileHeader)
 
      PrintSeparator();
  }
-
-void ReadSectionHeaders(FILE* file,SECTION_HEADER *headers, unsigned short count)
-{
-    for(int i = 0; i < count; i++)
-    {
-        size_t read = fread((headers+i), sizeof(SECTION_HEADER), 1, file);
-        if(read != 1)
-        {
-            ShowError("Something went wrong during reading file section.", "");
-            exit(1);
-        }    
-    }
-}
 
 void PrintSectionHeader(const SECTION_HEADER *s, int index)
 {
@@ -204,88 +164,6 @@ void PrintSectionHeaders(const SECTION_HEADER *headers, unsigned short count)
     }
 }
 
-char* ReadSectionText(FILE* file, SECTION_HEADER *directiveHeader)
-{
-    char *buffer = (char*) malloc(directiveHeader->SizeOfRawData + 1);
-    fseek(file, directiveHeader->PointerToRawData, SEEK_SET);
-    size_t count = fread(buffer, directiveHeader->SizeOfRawData, 1, file);
-    if(count != 1){
-        ShowError("Something went wrong reading directive header.", "");
-    }
-
-    buffer[directiveHeader->SizeOfRawData] = '\0';
-    return buffer;
-}
-
-int compareStrings(char* first, char* second, int upto = 0)
-{
-    int index = 0;
-    while(first[index] != '\0' && second[index] != '\0')
-    {
-        if(first[index] != second[index])
-        {
-            // They are not same
-            return 0;
-        }
-
-        index += 1;
-        if(upto != 0 && upto <= index)
-        {
-            return 1;
-        }
-    }
-
-    if(first[index] != second[index])
-    {
-        return 0;
-    }
-
-    return 1;
-}
-
-SECTION_HEADER *findSectionHeader(char *name, SECTION_HEADER* headerList, int listSize)
-{
-    for(int i = 0; i < listSize; i++)
-    {
-        if(compareStrings(name, headerList[i].Name, 8))
-        {
-            return &headerList[i];
-        }
-    }
-
-    return NULL;
-}
-
-RELOCATION *ReadRelocationTable(FILE* file, char* sectionName, SECTION_HEADER* headerList, int listSize)
-{
-
-    SECTION_HEADER *header = findSectionHeader(sectionName, headerList, listSize);      
-    if(!header)
-    {
-        ShowError("Something went wrong finding section header in ReadRelocationTable function.", "");
-    }
-    
-    int tableEntryCount = header->NumberOfRelocations;
-    if(tableEntryCount == 0)
-    {
-        return NULL;
-    }
-    RELOCATION* relocationTable = (RELOCATION* ) malloc(tableEntryCount * sizeof(RELOCATION));
-    if(!relocationTable)
-    {
-        ShowError("Out of memory!", "");
-    }
-        
-    fseek(file, header->PointerToRelocations, SEEK_SET);
-    size_t count = fread(relocationTable, sizeof(RELOCATION), tableEntryCount, file);
-    if(count != tableEntryCount)
-    {
-        ShowError("Something went wrong reading relocation table.", "");
-    }
-
-    return relocationTable;
-}
-
 void PrintRelocations(const SECTION_HEADER *section, const RELOCATION *table)
 {
     char title[64];
@@ -314,6 +192,142 @@ void PrintRelocations(const SECTION_HEADER *section, const RELOCATION *table)
     printf("+-------+------------+--------------+--------+\n");
 }
 
+void PrintSymbolSeparator()
+{
+    static const int widths[] = { 5, 10, 6, 6, 5, 3, 40 };      // # Value Sect Type Class Aux Name
+    for (int i = 0; i < 7; i++)
+    {
+        putchar('+');
+        for (int j = 0; j < widths[i] + 2; j++) putchar('-');
+    }
+    printf("+\n");
+}
+
+void PrintSymbols(const SYMBOL *symbols, uint32_t count, char *stringTable)
+{
+    char title[64];
+    snprintf(title, sizeof(title), "SYMBOL TABLE (%u records)", count);
+
+    PrintSymbolSeparator();
+    printf("| %-93s |\n", title);
+    PrintSymbolSeparator();
+    printf("| %-5s | %-10s | %-6s | %-6s | %-5s | %-3s | %-40s |\n",
+           "#", "Value", "Sect", "Type", "Class", "Aux", "Name");
+    PrintSymbolSeparator();
+
+    // an aux record has the same size as a symbol but is not one, so skip over them
+    for (uint32_t i = 0; i < count; i += 1 + symbols[i].NumberOfAuxSymbols)
+    {
+        char *name = GetSymbolName(symbols[i], stringTable);
+        printf("| %-5u | 0x%08X | %-6d | 0x%04X | %-5d | %-3d | %-40.40s |\n",
+               i,
+               symbols[i].Value,
+               symbols[i].SectionNumber,
+               symbols[i].Type,
+               symbols[i].StorageClass,
+               symbols[i].NumberOfAuxSymbols,
+               name);
+        free(name);
+    }
+
+    PrintSymbolSeparator();
+}
+
+
+void PrintTitle(char* title, unsigned int rowLength)
+{
+    putchar('+');
+    for(int i = 0; i < rowLength - 2; i++)
+    {
+        putchar('-');
+    }
+    putchar('+');
+    putchar('\n');
+
+    int titleLength = GetStringLength(title);
+    int leftPadding = ((rowLength - 2) - titleLength) / 2;
+    if (leftPadding < 0) leftPadding = 0;
+    unsigned int rightPadding = (rowLength - 2) - leftPadding - titleLength;
+    if(rightPadding < 0) rightPadding = 0;
+    
+    printf("+%*s%s%*s+\n", leftPadding, "", title, rightPadding, "");
+
+    putchar('+');
+    for(int i = 0; i < rowLength - 2; i++)
+    {
+        putchar('-');
+    }
+    putchar('+');
+    putchar('\n');
+    
+}
+
+void PrintSectionBinary(char* content, SECTION_HEADER *header)
+{
+    unsigned int TITLE_ROW_LENGTH = 80;
+    unsigned int ADDRESS_FIELD_LENGTH = 10;
+    unsigned int BYTE_IN_ROW = 16;
+    unsigned int BYTE_FIELD_LENGTH = 3;       // Don't give lower than 2.
+    
+    
+    // be carefull header->Name is not always '\0' terminated.
+    char* title = MergeStrings(header->Name, " Section");
+    PrintTitle(title, TITLE_ROW_LENGTH);
+    
+    printf("%-*s", ADDRESS_FIELD_LENGTH, "");
+    for(int i = 0; i < BYTE_IN_ROW; i++)
+    {
+        printf("%-*x", BYTE_FIELD_LENGTH, i);
+    }
+    printf("\n");
+
+    for(int i = 0; i < header->SizeOfRawData; i++)
+    {
+        if(i % BYTE_IN_ROW == 0)
+        {
+            if(i != 0) printf("\n");
+            printf("%08x%*s", i, ADDRESS_FIELD_LENGTH - 8, "");
+        }
+
+        printf("%02x%*s", (unsigned char)content[i], BYTE_FIELD_LENGTH - 2, "");
+    }
+
+    printf("\n\n");
+    
+    free(title);
+    title = NULL;
+}
+
+
+//************************************************************
+// STRING FUNCTIONS
+//************************************************************
+int compareStrings(char* first, char* second, int upto = 0)
+{
+    int index = 0;
+    while(first[index] != '\0' && second[index] != '\0')
+    {
+        if(first[index] != second[index])
+        {
+            // They are not same
+            return 0;
+        }
+
+        index += 1;
+        if(upto != 0 && upto <= index)
+        {
+            return 1;
+        }
+    }
+
+    if(first[index] != second[index])
+    {
+        return 0;
+    }
+
+    return 1;
+}
+
 void ReplaceCharacter(char *text, char replace, char replaceWith)
 {
     unsigned int index = 0;
@@ -325,6 +339,52 @@ void ReplaceCharacter(char *text, char replace, char replaceWith)
         }
         index += 1;
     }
+}
+
+unsigned int GetStringLength(char *string)
+{
+    unsigned int length = 0;
+    
+    while(string[length] != '\0')
+    {
+        length += 1;
+    }
+
+    return length;
+}
+
+char *MergeStrings(char *first, char* second)
+{
+    unsigned int firstLength = GetStringLength(first);
+    unsigned int secondLength = GetStringLength(second);
+
+
+    char* mergeString = (char *) malloc(firstLength + secondLength + 1);
+    memcpy(mergeString, first, firstLength);
+    memcpy((mergeString + firstLength), second, secondLength);
+
+    mergeString[firstLength + secondLength] = '\0';
+    return mergeString;
+}
+
+
+
+//************************************************************
+// CORE FUNCTIONS
+//************************************************************
+
+void VerifyArg(int argc, char **argv)
+{
+    if(argc < 2)
+    {
+        ShowError("Usage: %s <filePath> \n", argv[0]);
+        exit(1);                                    // User didn't supply the object file path
+    }
+}
+
+const char* GetObjFilePath(char **argv)
+{
+    return argv[1];
 }
 
 char **divideCommand(char* text, char delimiter)
@@ -369,6 +429,100 @@ char **divideCommand(char* text, char delimiter)
 
     return result;
 }
+
+FILE* OpenObjectFile(const char *path)
+{
+    FILE* file = fopen(path, "rb");
+    if(!file)
+    {
+        ShowError("File couldn't found: %s", path);
+        exit(1);
+    }
+    return file;
+}
+
+void ReadFileHeader(FILE* file, FILE_HEADER *fileHeader)
+{
+    size_t count = fread(fileHeader, sizeof(FILE_HEADER), 1, file);
+    if(count != 1)
+     {
+         ShowError("Something went wrong during reading file header.", "");
+         exit(1);
+     }
+}
+
+
+void ReadSectionHeaders(FILE* file,SECTION_HEADER *headers, unsigned short count)
+{
+    for(int i = 0; i < count; i++)
+    {
+        size_t read = fread((headers+i), sizeof(SECTION_HEADER), 1, file);
+        if(read != 1)
+        {
+            ShowError("Something went wrong during reading file section.", "");
+            exit(1);
+        }    
+    }
+}
+
+
+char* ReadSectionText(FILE* file, SECTION_HEADER *directiveHeader)
+{
+    char *buffer = (char*) malloc(directiveHeader->SizeOfRawData + 1);
+    fseek(file, directiveHeader->PointerToRawData, SEEK_SET);
+    size_t count = fread(buffer, directiveHeader->SizeOfRawData, 1, file);
+    if(count != 1){
+        ShowError("Something went wrong reading directive header.", "");
+    }
+
+    buffer[directiveHeader->SizeOfRawData] = '\0';
+    return buffer;
+}
+
+
+SECTION_HEADER *findSectionHeader(char *name, SECTION_HEADER* headerList, int listSize)
+{
+    for(int i = 0; i < listSize; i++)
+    {
+        if(compareStrings(name, headerList[i].Name, 8))
+        {
+            return &headerList[i];
+        }
+    }
+
+    return NULL;
+}
+
+RELOCATION *ReadRelocationTable(FILE* file, char* sectionName, SECTION_HEADER* headerList, int listSize)
+{
+
+    SECTION_HEADER *header = findSectionHeader(sectionName, headerList, listSize);      
+    if(!header)
+    {
+        ShowError("Something went wrong finding section header in ReadRelocationTable function.", "");
+    }
+    
+    int tableEntryCount = header->NumberOfRelocations;
+    if(tableEntryCount == 0)
+    {
+        return NULL;
+    }
+    RELOCATION* relocationTable = (RELOCATION* ) malloc(tableEntryCount * sizeof(RELOCATION));
+    if(!relocationTable)
+    {
+        ShowError("Out of memory!", "");
+    }
+        
+    fseek(file, header->PointerToRelocations, SEEK_SET);
+    size_t count = fread(relocationTable, sizeof(RELOCATION), tableEntryCount, file);
+    if(count != tableEntryCount)
+    {
+        ShowError("Something went wrong reading relocation table.", "");
+    }
+
+    return relocationTable;
+}
+
 
 SYMBOL *ReadSymbols(FILE* file, unsigned int pointerToSymbols, unsigned int numberOfSymbols)
 {
@@ -445,47 +599,6 @@ char* GetSymbolName(SYMBOL symbol, char* stringTable)
         
 }
 
-void PrintSymbolSeparator()
-{
-    static const int widths[] = { 5, 10, 6, 6, 5, 3, 40 };      // # Value Sect Type Class Aux Name
-    for (int i = 0; i < 7; i++)
-    {
-        putchar('+');
-        for (int j = 0; j < widths[i] + 2; j++) putchar('-');
-    }
-    printf("+\n");
-}
-
-void PrintSymbols(const SYMBOL *symbols, uint32_t count, char *stringTable)
-{
-    char title[64];
-    snprintf(title, sizeof(title), "SYMBOL TABLE (%u records)", count);
-
-    PrintSymbolSeparator();
-    printf("| %-93s |\n", title);
-    PrintSymbolSeparator();
-    printf("| %-5s | %-10s | %-6s | %-6s | %-5s | %-3s | %-40s |\n",
-           "#", "Value", "Sect", "Type", "Class", "Aux", "Name");
-    PrintSymbolSeparator();
-
-    // an aux record has the same size as a symbol but is not one, so skip over them
-    for (uint32_t i = 0; i < count; i += 1 + symbols[i].NumberOfAuxSymbols)
-    {
-        char *name = GetSymbolName(symbols[i], stringTable);
-        printf("| %-5u | 0x%08X | %-6d | 0x%04X | %-5d | %-3d | %-40.40s |\n",
-               i,
-               symbols[i].Value,
-               symbols[i].SectionNumber,
-               symbols[i].Type,
-               symbols[i].StorageClass,
-               symbols[i].NumberOfAuxSymbols,
-               name);
-        free(name);
-    }
-
-    PrintSymbolSeparator();
-}
-
 char* ReadSectionBinary(FILE* file, SECTION_HEADER* header)
 {
     fseek(file, header->PointerToRawData, SEEK_SET);
@@ -502,95 +615,6 @@ char* ReadSectionBinary(FILE* file, SECTION_HEADER* header)
 }
 
 
-unsigned int GetStringLength(char *string)
-{
-    unsigned int length = 0;
-    
-    while(string[length] != '\0')
-    {
-        length += 1;
-    }
-
-    return length;
-}
-
-char *MergeStrings(char *first, char* second)
-{
-    unsigned int firstLength = GetStringLength(first);
-    unsigned int secondLength = GetStringLength(second);
-
-
-    char* mergeString = (char *) malloc(firstLength + secondLength + 1);
-    memcpy(mergeString, first, firstLength);
-    memcpy((mergeString + firstLength), second, secondLength);
-
-    mergeString[firstLength + secondLength] = '\0';
-    return mergeString;
-}
-
-void PrintTitle(char* title, unsigned int rowLength)
-{
-    putchar('+');
-    for(int i = 0; i < rowLength - 2; i++)
-    {
-        putchar('-');
-    }
-    putchar('+');
-    putchar('\n');
-
-    int titleLength = GetStringLength(title);
-    int leftPadding = ((rowLength - 2) - titleLength) / 2;
-    if (leftPadding < 0) leftPadding = 0;
-    unsigned int rightPadding = (rowLength - 2) - leftPadding - titleLength;
-    if(rightPadding < 0) rightPadding = 0;
-    
-    printf("+%*s%s%*s+\n", leftPadding, "", title, rightPadding, "");
-
-    putchar('+');
-    for(int i = 0; i < rowLength - 2; i++)
-    {
-        putchar('-');
-    }
-    putchar('+');
-    putchar('\n');
-    
-}
-
-void PrintSectionBinary(char* content, SECTION_HEADER *header)
-{
-    unsigned int TITLE_ROW_LENGTH = 80;
-    unsigned int ADDRESS_FIELD_LENGTH = 10;
-    unsigned int BYTE_IN_ROW = 16;
-    unsigned int BYTE_FIELD_LENGTH = 3;       // Don't give lower than 2.
-    
-    
-    // be carefull header->Name is not always '\0' terminated.
-    char* title = MergeStrings(header->Name, " Section");
-    PrintTitle(title, TITLE_ROW_LENGTH);
-    
-    printf("%-*s", ADDRESS_FIELD_LENGTH, "");
-    for(int i = 0; i < BYTE_IN_ROW; i++)
-    {
-        printf("%-*x", BYTE_FIELD_LENGTH, i);
-    }
-    printf("\n");
-
-    for(int i = 0; i < header->SizeOfRawData; i++)
-    {
-        if(i % BYTE_IN_ROW == 0)
-        {
-            if(i != 0) printf("\n");
-            printf("%08x%*s", i, ADDRESS_FIELD_LENGTH - 8, "");
-        }
-
-        printf("%02x%*s", (unsigned char)content[i], BYTE_FIELD_LENGTH - 2, "");
-    }
-
-    printf("\n\n");
-    
-    free(title);
-    title = NULL;
-}
 
 int main(int argc, char **argv)
 {
@@ -765,8 +789,6 @@ int main(int argc, char **argv)
         commandList = NULL;
 
     }
-
-
 
     // Clear heap pointers
 
