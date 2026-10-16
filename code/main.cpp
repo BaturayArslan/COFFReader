@@ -204,7 +204,7 @@ void PrintSectionHeaders(const SECTION_HEADER *headers, unsigned short count)
     }
 }
 
-char* ReadDirectiveSection(FILE* file, SECTION_HEADER *directiveHeader)
+char* ReadSectionText(FILE* file, SECTION_HEADER *directiveHeader)
 {
     char *buffer = (char*) malloc(directiveHeader->SizeOfRawData + 1);
     fseek(file, directiveHeader->PointerToRawData, SEEK_SET);
@@ -314,7 +314,20 @@ void PrintRelocations(const SECTION_HEADER *section, const RELOCATION *table)
     printf("+-------+------------+--------------+--------+\n");
 }
 
-char **divideString(char* text, char delimiter)
+void ReplaceCharacter(char *text, char replace, char replaceWith)
+{
+    unsigned int index = 0;
+    while(text[index] != '\0')
+    {
+        if(text[index] == replace)
+        {
+            text[index] = replaceWith;
+        }
+        index += 1;
+    }
+}
+
+char **divideCommand(char* text, char delimiter)
 {
     char **result = (char **) malloc(4 * sizeof(char*));
     for(int i = 0; i < 4; i ++)
@@ -473,6 +486,112 @@ void PrintSymbols(const SYMBOL *symbols, uint32_t count, char *stringTable)
     PrintSymbolSeparator();
 }
 
+char* ReadSectionBinary(FILE* file, SECTION_HEADER* header)
+{
+    fseek(file, header->PointerToRawData, SEEK_SET);
+    char *content = (char*) malloc(header->SizeOfRawData + 1);
+    size_t count = fread(content, 1, header->SizeOfRawData, file);
+    if(count != header->SizeOfRawData)
+    {
+        ShowError("Something went wrong reading section data.", "");
+        exit(1);
+    }
+
+    content[header->SizeOfRawData] = '\n';
+    return content;
+}
+
+
+unsigned int GetStringLength(char *string)
+{
+    unsigned int length = 0;
+    
+    while(string[length] != '\0')
+    {
+        length += 1;
+    }
+
+    return length;
+}
+
+char *MergeStrings(char *first, char* second)
+{
+    unsigned int firstLength = GetStringLength(first);
+    unsigned int secondLength = GetStringLength(second);
+
+
+    char* mergeString = (char *) malloc(firstLength + secondLength + 1);
+    memcpy(mergeString, first, firstLength);
+    memcpy((mergeString + firstLength), second, secondLength);
+
+    mergeString[firstLength + secondLength] = '\0';
+    return mergeString;
+}
+
+void PrintTitle(char* title, unsigned int rowLength)
+{
+    putchar('+');
+    for(int i = 0; i < rowLength - 2; i++)
+    {
+        putchar('-');
+    }
+    putchar('+');
+    putchar('\n');
+
+    int titleLength = GetStringLength(title);
+    int leftPadding = ((rowLength - 2) - titleLength) / 2;
+    if (leftPadding < 0) leftPadding = 0;
+    unsigned int rightPadding = (rowLength - 2) - leftPadding - titleLength;
+    if(rightPadding < 0) rightPadding = 0;
+    
+    printf("+%*s%s%*s+\n", leftPadding, "", title, rightPadding, "");
+
+    putchar('+');
+    for(int i = 0; i < rowLength - 2; i++)
+    {
+        putchar('-');
+    }
+    putchar('+');
+    putchar('\n');
+    
+}
+
+void PrintSectionBinary(char* content, SECTION_HEADER *header)
+{
+    unsigned int TITLE_ROW_LENGTH = 80;
+    unsigned int ADDRESS_FIELD_LENGTH = 10;
+    unsigned int BYTE_IN_ROW = 16;
+    unsigned int BYTE_FIELD_LENGTH = 3;       // Don't give lower than 2.
+    
+    
+    // be carefull header->Name is not always '\0' terminated.
+    char* title = MergeStrings(header->Name, " Section");
+    PrintTitle(title, TITLE_ROW_LENGTH);
+    
+    printf("%-*s", ADDRESS_FIELD_LENGTH, "");
+    for(int i = 0; i < BYTE_IN_ROW; i++)
+    {
+        printf("%-*x", BYTE_FIELD_LENGTH, i);
+    }
+    printf("\n");
+
+    for(int i = 0; i < header->SizeOfRawData; i++)
+    {
+        if(i % BYTE_IN_ROW == 0)
+        {
+            if(i != 0) printf("\n");
+            printf("%08x%*s", i, ADDRESS_FIELD_LENGTH - 8, "");
+        }
+
+        printf("%02x%*s", (unsigned char)content[i], BYTE_FIELD_LENGTH - 2, "");
+    }
+
+    printf("\n\n");
+    
+    free(title);
+    title = NULL;
+}
+
 int main(int argc, char **argv)
 {
     VerifyArg(argc, argv);
@@ -508,7 +627,18 @@ int main(int argc, char **argv)
             continue;
         }
         
-        char **commandList = divideString(command, ' ');
+        char **commandList = divideCommand(command, ' ');
+        // Command can be maximum consist of 4 part. Remove  newline character fgets introduce.
+        for(int i = 0; i < 4; i++)
+        {
+            if(commandList[i])
+            {
+                char *commandPart = commandList[i];
+                ReplaceCharacter(commandPart, '\n', '\0');
+                ReplaceCharacter(commandPart, '\r', '\0');
+            }
+        }
+        
         if(!commandList[0])
         {
             ShowError("Something went wrong reading input", "");
@@ -524,6 +654,12 @@ int main(int argc, char **argv)
         // printf("Result of compareString: %d \n", compareStrings(commandList[0], "list"));
         if (compareStrings(commandList[0], "list", 4))
         {
+            if(!commandList[1])
+            {
+                ShowError("Invalid command format. Please see help command.\n", "");
+                continue;
+            }
+            
             if (compareStrings(commandList[1], "sections", 8))
             {
                 for(int i = 0; i < numberOfSections; i++)
@@ -536,7 +672,7 @@ int main(int argc, char **argv)
                 printf("\n");
                 
             }else if (compareStrings(commandList[1], "headers", 7))
-            {
+            {                
                 PrintFileHeader(&fileHeader);
                 PrintSectionHeaders(sectionHeaders, numberOfSections);
                 
@@ -571,6 +707,12 @@ int main(int argc, char **argv)
             
         }else if (compareStrings(commandList[0], "show", 4))
         {
+            if(!commandList[1])
+            {
+                ShowError("Invalid command format. Please see help command.\n", "");
+                continue;
+            }
+            
             if (compareStrings(commandList[1], "section", 7))
             {
                 if(!commandList[2])
@@ -581,15 +723,25 @@ int main(int argc, char **argv)
                 
                 // Read header
                 SECTION_HEADER* header = findSectionHeader(commandList[2], sectionHeaders, numberOfSections);
-
-                if(compareStrings(commandList[2], ".drectve", 8) && header)
+                if(!header)
                 {
-                    
-                    char *directiveSection = ReadDirectiveSection(file, header);
-                    printf("Directive Section: %s\n\n", directiveSection);
-                    free(directiveSection);
-                    directiveSection = NULL;                       
-                }                
+                    ShowError("Section header couldn't found. Use 'list sections' to get available section names.\n\n", "");
+                    continue;
+                }
+
+                char *sectionContent = NULL;
+                if(compareStrings(commandList[2], ".drectve", 8))
+                {
+                    sectionContent = ReadSectionText(file, header);
+                    printf("Directive Section: %s\n\n", sectionContent);
+                }else
+                {
+                    sectionContent = ReadSectionBinary(file, header);
+                    PrintSectionBinary(sectionContent, header);
+                }
+
+                free(sectionContent);
+                sectionContent = NULL;
             }
         }else if (compareStrings(commandList[0], "help", 4))
         {
